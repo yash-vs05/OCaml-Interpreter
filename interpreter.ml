@@ -1,3 +1,6 @@
+exception No_Environment
+exception StackException
+
 type types =
   |StringC of string
   |Error of string
@@ -6,65 +9,119 @@ type types =
   |Name of string
   |Unit of string
 
+type out = string list
+type stack = types list
+type stacks = stack list
+type binding = (string * types)
+type env = ((string * types) list) list
+type info = (stacks * env * out)
+(* type closure = (env * string list) *)
+(* type func = (string * closure) *)
+(* type frames = info list *)
+
+(* FLAG for arithmetic options: Div: Division, NDiv: No Division, Log: Integer Logical (lessThan, equal) *)
 type ar_flag =
   |Div
-  |Log
   |NDiv
+  |Log
 
-let resolve (arg : types) (env_var : (string * types) list) : (types) =
+(* HELPER for checking if name is valid (ignores first character) *)
+let valid_name (c : char) : bool =
+  ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || (c = '_'))
+
+(* HELPER for checking if first character of name is valid *)
+let fst_valid (c : char) : bool =
+  ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c = '_'))
+
+(* HELPER for checking if string is valid for it to become an integer (ignores first character) *)
+let valid_int (c : char) : bool =
+  (c >= '0' && c <= '9')
+
+(* HELPER for checking if first character of string is valid for it to become an integer *)
+let fst_valid_int (c : char) : bool =
+  ((c >= '0' && c <= '9') || (c = '-'))
+
+(* HELPER for Arithmetic-Bool operations *)
+let logical (f : int -> int -> bool) (a : int) (b : int) : (int) =
+  if f a b then 1 else 0
+
+(* HELPER for converting Bool argument strings to bool *)
+let t_str_to_bool (s: string) : bool =
+  (bool_of_string(String.sub s 1 (String.length s - 2)))
+
+(* HELPER for converting bool to Bool argument strings *)
+let t_bool_to_str (b: bool) : string =
+  ":"^(string_of_bool(b))^":"
+
+(* HELPER for resolving names *)
+let resolve (arg : types) (env_var : env) : (types) =
   match arg with
   |Name n ->
-    begin match (List.assoc_opt n env_var) with
-    | None -> arg
-    | Some v -> v
+    begin match env_var with
+    | h :: t ->
+      begin match (List.assoc_opt n h) with
+      | None -> arg
+      | Some v -> v
+    end
+    | _ -> raise No_Environment
   end
   |_ -> arg
 
+(* HELPER for splitting command tags *)
 let split (line : string) : (string * string) =
   let idx = String.index_from_opt line 0 ' ' in
   match idx with
   |None -> line,""
   |Some x -> (String.sub line 0 x),(String.sub line (x+1) ((String.length line) - 1 - x))
-let valid_name (c : char) : bool =
-  ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || (c = '_'))
 
-let fst_valid (c : char) : bool =
-  ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c = '_'))
-
+(* HELPER for determining argument from string *)
 let arg_det (arg : string) : (types) =
   match arg with
+  | "" -> Error ":error:"
   |":true:" -> Bool arg
   |":false:" -> Bool arg
   |":unit:" -> Unit arg
   |":error:" -> Error arg
   | _ ->
-    if (String.starts_with ~prefix:"\"" arg) then
+    if ((String.starts_with ~prefix:"\"" arg) && (String.ends_with ~suffix:"\"" arg)) then
       StringC (String.sub arg 1 (String.length arg - 2))
     else
-      begin match int_of_string_opt arg with
+      let num = int_of_string_opt arg in
+      begin match num with
       |Some x ->
-        Int (int_of_string arg)
-      |None ->
-         if ((fst_valid (String.get arg 0)) && (String.for_all valid_name arg)) then
-          Name arg
+        if (fst_valid_int (String.get arg 0)) && (String.for_all valid_int (String.sub arg 1 (String.length arg - 1))) then
+          Int (x)
         else
           Error ":error:"
+      |None ->
+        begin if (not(arg = "_")) then
+         begin if ((fst_valid (String.get arg 0)) && (String.for_all valid_name arg)) then
+          Name arg
+         else
+          Error ":error:"
+         end
+        else
+           Error ":error:"
         end
+      end
 
-let rec push (arg : string) (stack : types list) : (types list) =
-  if arg = "" then
-    Error ":error:" :: stack
-  else
-    (arg_det (String.trim arg)) :: stack
+(* Takes in an argument and puts it on top of the stack *)
+let push (arg : types) (stack : stack) : (stack) =
+  arg :: stack
 
-let pop (stack : types list) : (types list) =
+(* HELPER for pushing errors onto the stack *)
+let _error_ (stack : stack) = push (Error ":error:") stack
+
+(* Removes the top of the stack *)
+let pop (stack : stack) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> push (Error ":error:") stack
   | h::t -> t
 
-let arithmetic (f : int->int->int) (flag : ar_flag) (stack : types list) (env_var : (string * types) list) : (types list) =
+(* Performs arithmetic and integer logical functions like +, -, *, /, mod, lessThan, equal (only integer operands) *)
+let arithmetic (f : int->int->int) (flag : ar_flag) (stack : stack) (env_var : env) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> _error_ stack
   | e1::e2::t ->
     let e1 = resolve e1 env_var in
     let e2 = resolve e2 env_var in
@@ -75,113 +132,112 @@ let arithmetic (f : int->int->int) (flag : ar_flag) (stack : types list) (env_va
         begin match flag with
         |Div ->
           if x = 0 then
-            Error ":error:" :: stack
+            _error_ stack
         else
           (Int (f y x)) :: t
         |Log ->
           begin match (f y x) with
-          | 0 -> Bool ":false:" :: t
-          | 1 -> Bool ":true:" :: t
-          | _ -> Error ":error:" :: stack
+          | 0 -> push (Bool ":false:") t
+          | 1 -> push (Bool ":true:") t
+          | _ -> push (Error ":error:") stack
         end
         | _ -> (Int (f y x)) :: t
         end
-      |_ -> Error ":error:" :: stack
+      |_ -> _error_ stack
       end
-    |_ -> Error ":error:" :: stack
+    |_ -> _error_ stack
     end
-  | _ -> Error ":error:" :: stack
+  | _ -> _error_ stack
 
-let neg (stack : types list) (env_var : (string * types) list) : (types list) =
+(* Negates the top of the stack (only integer operands) *)
+let neg (stack : stack) (env_var : env) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> _error_ stack
   | h::t ->
     let h = resolve h env_var in
     match h with
-    |Int x -> Int (-x) :: t
-    |_ -> Error ":error:" :: stack
+    |Int x -> push (Int (-x)) t
+    |_ -> _error_ stack
 
-let t_str_to_bool (s:string) : bool =
-  (bool_of_string(String.sub s 1 (String.length s - 2)))
-
-let t_bool_to_str (b:bool) : string =
-  ":"^(string_of_bool(b))^":"
-
-let not (stack : types list) (env_var : (string * types) list) : (types list) =
+(* Inverts the top of the stack (only bool operands) *)
+let not (stack : stack) (env_var : env) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> _error_ stack
   | h::t ->
     let h = resolve h env_var in
     match h with
-    |Bool x -> (Bool (t_bool_to_str(not(t_str_to_bool x)))) :: t
-    |_ -> Error ":error:" :: stack
+    |Bool x -> push (Bool (t_bool_to_str(not(t_str_to_bool x)))) t
+    |_ -> _error_ stack
 
-let bool_op (f : bool->bool->bool) (stack : types list) (env_var : (string * types) list) : (types list) =
+(* Performs boolean operations like AND, OR (only bool operands) *)
+let bool_op (f : bool->bool->bool) (stack : stack) (env_var : env) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> _error_ stack
   | e1::e2::t ->
     let e1 = resolve e1 env_var in
     let e2 = resolve e2 env_var in
     begin match e1 with
     |Bool x ->
       begin match e2 with
-      |Bool y -> (Bool (t_bool_to_str(f (t_str_to_bool y) (t_str_to_bool x)))) :: t
-      |_ -> Error ":error:" :: stack
+      |Bool y -> push (Bool (t_bool_to_str(f (t_str_to_bool y) (t_str_to_bool x)))) t
+      |_ -> _error_ stack
     end
-    |_ -> Error ":error:" :: stack
+    |_ -> _error_ stack
   end
-  |_ -> Error ":error:" :: stack
+  |_ -> _error_ stack
 
-let str_op (f : string->string->string) (stack : types list) (env_var : (string * types) list) : (types list) =
+(* Performs string operations like concatenation (only string operands) *)
+let str_op (f : string->string->string) (stack : stack) (env_var : env) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> _error_ stack
   | e1::e2::t ->
     let e1 = resolve e1 env_var in
     let e2 = resolve e2 env_var in
     begin match e1 with
     |StringC x ->
       begin match e2 with
-      |StringC y -> StringC (f y x) :: t
-      |_ -> Error ":error:" :: stack
+      |StringC y -> push (StringC (f y x)) t
+      |_ -> _error_ stack
     end
-    |_ -> Error ":error:" :: stack
+    |_ -> _error_ stack
   end
-  |_ -> Error ":error:" :: stack
+  |_ -> _error_ stack
 
-let swap (stack : types list) : (types list) =
+(* Swaps the top two elements of the stack *)
+let swap (stack : stack) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
-  | e1::e2::t -> e2::e1::t
-  | _ -> Error ":error:" :: stack
+  | [] -> _error_ stack
+  | e1::e2::t -> push e2 (push e1 t)
+  | _ -> _error_ stack
 
-let toString (stack : types list) (env_var : (string * types) list) : (types list) =
+(* Converts arguments to printable strings *)
+let toString (stack : stack) (env_var : env) : (stack) =
   match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> _error_ stack
   | h::t ->
-    (* let h = resolve h env_var in *)
     match h with
-    |Int x -> StringC (string_of_int x) :: t
-    |Bool x -> StringC (x) :: t
-    |StringC x -> (StringC x) :: t
-    |Name x -> StringC (x) :: t
-    |Unit x -> StringC (x) :: t
-    |Error x -> StringC (x) :: t
+    |Int x -> push (StringC (string_of_int x)) t
+    |Bool x |StringC x|Name x |Unit x |Error x -> push (StringC x) t
 
-let println (stack : types list) (output : string list) (env_var : (string * types) list) : (string list * types list * (string * types) list) =
+
+(* Adds the top string to output to be printed *)
+let println ((stacks, env_var, output) : info) : (info) =
+  match stacks with
+  | stack :: rest ->
+    begin match stack with
+    | [] -> (_error_ stack :: rest), env_var, output
+    | h::t ->
+      begin match h with
+      |StringC x -> (t :: rest), env_var, x::output
+      |_ -> (_error_ stack :: rest), env_var, output
+    end
+  end
+  |_ -> raise StackException
+
+(* If third top is true, top is left, else second top is left *)
+let if_op (stack : stack) (env_var : env) : (stack) =
   match stack with
-  | [] -> output, Error ":error:" :: stack, env_var
-  | h::t ->
-    (* let h = resolve h env_var in *)
-    match h with
-    |StringC x -> x::output, t, env_var
-    |_ -> output, Error ":error:" :: stack, env_var
-
-let logical (f : int -> int -> bool) (a : int) (b : int) : (int) =
-  if f a b then 1 else 0
-
-let if_op (stack : types list) (env_var : (string * types) list) : (types list) =
-  match stack with
-  | [] -> Error ":error:" :: stack
+  | [] -> _error_ stack
   | e1::e2::e3::t ->
     let e1 = resolve e1 env_var in
     let e2 = resolve e2 env_var in
@@ -189,63 +245,111 @@ let if_op (stack : types list) (env_var : (string * types) list) : (types list) 
     begin match e3 with
     |Bool x ->
       begin match x with
-      |":true:" -> e1 :: t
-      |":false:" -> e2 :: t
-      |_ -> Error ":error:" :: stack
+      |":true:" -> push e1 t
+      |":false:" -> push e2 t
+      |_ -> _error_ stack
     end
-    |_ -> Error ":error:" :: stack
+    |_ -> _error_ stack
   end
-  |_ -> Error ":error:" :: stack
+  |_ -> _error_ stack
 
-let bind (stack : types list) (output : string list) (env_var : (string * types) list) : (string list * types list * (string * types) list) =
+(* Binds the value (Int, Bool, String, Unit or Value of Bound Name) present on top to a name present on second top *)
+let bind (stack : stack) ((stacks, env_var, output) : info) : (info) =
   match stack with
-  | [] -> output, Error ":error:" :: stack, env_var
-  | e1::e2::t ->
+  | [] -> _error_ stack :: stacks, env_var, output
+  | e1::e2::t1 ->
     let e1 = resolve e1 env_var in
     begin match e2 with
     |Name n ->
       begin match e1 with
-      |StringC _ |Int _ |Unit _ |Bool _ -> output, Unit ":unit:" :: t, (n, e1) :: env_var
-      |_ -> output, Error ":error:" :: stack, env_var
+      |StringC _ |Int _ |Unit _ |Bool _ ->
+        begin match env_var with
+        | h2 :: t2 -> (push (Unit ":unit:") t1) :: stacks, ((n, e1) :: h2) :: t2, output
+        | _ -> raise No_Environment
+      end
+      |_ ->  _error_ stack :: stacks, env_var, output
     end
-    |_ -> output, Error ":error:" :: stack, env_var
+    |_ ->  _error_ stack :: stacks, env_var, output
   end
-  | _ -> output, Error ":error:" :: stack, env_var
+  | _ ->  _error_ stack :: stacks, env_var, output
 
-let com_det (line : string) (output : string list) (stack : types list) (env_var : (string * types) list) : (string list * types list * (string * types)list) =
+(* Starts a new scope, that is, create a new environment with previous bindings present and a new stack *)
+let let_op ((stacks, env_var, output) : info) : (info) =
+  match env_var with
+  | h :: t ->
+    let nenv_var = h :: h :: t in
+    ([]::stacks, nenv_var, output)
+  | _ -> raise No_Environment
+
+
+(* Ends a scope, that is, deletes the latest environment and returns from the latest stack to the previous *)
+let end_op ((stacks, env_var, output) : info) : (info) =
+  match env_var with
+  | h :: t ->
+    let nenv_var = t in
+    begin match stacks with
+    | stack :: old :: rest ->
+      begin match stack with
+      | top :: els ->
+        let nstack = (top :: old) in
+        let nstacks = nstack :: rest in
+        (nstacks, nenv_var, output)
+      | _ -> raise StackException
+      end
+    | _ -> raise StackException
+    end
+  | _ -> raise No_Environment
+
+(* Detects and executes the command passed in *)
+let com_det (line : string) ((stacks, env_var, output) : info) : (info) =
   let com_lst = split line in
   match com_lst with
   | (a,b) ->
-    match String.trim a with
-    | "quit" -> output, pop stack, env_var
-    | "push" -> output, push b stack, env_var
-    | "pop" -> output, pop stack, env_var
-    | "add" -> output, arithmetic ( + ) NDiv stack env_var, env_var
-    | "sub" -> output, arithmetic ( - ) NDiv stack env_var, env_var
-    | "mul" -> output, arithmetic ( * ) NDiv stack env_var, env_var
-    | "div" -> output, arithmetic ( / ) Div stack env_var, env_var
-    | "rem" -> output, arithmetic ( mod ) Div stack env_var, env_var
-    | "neg" -> output, neg stack env_var, env_var
-    | "swap" -> output, swap stack, env_var
-    | "toString" -> output, toString stack env_var, env_var
-    | "println" -> println stack output env_var
-    | "lessThan" -> output, arithmetic (logical ( < )) Log stack env_var, env_var
-    | "equal" -> output, arithmetic (logical ( = )) Log stack env_var, env_var
-    | "and" -> output, bool_op ( && ) stack env_var, env_var
-    | "or" -> output, bool_op ( || ) stack env_var, env_var
-    | "not" -> output, not stack env_var, env_var
-    | "cat" -> output, str_op ( ^ ) stack env_var, env_var
-    | "if" -> output, if_op stack env_var, env_var
-    | "bind" -> bind stack output env_var
-    | _ -> output, stack, env_var
+    begin match stacks with
+    | stack :: rest ->
+      begin match String.trim a with
+      | "quit" -> ((pop stack)::rest, env_var, output)
+      | "push" -> ((push (arg_det(String.trim b)) stack)::rest, env_var, output)
+      | "pop" -> ((pop stack)::rest, env_var, output)
+      | "add" -> ((arithmetic ( + ) NDiv stack env_var)::rest, env_var, output)
+      | "sub" -> ((arithmetic ( - ) NDiv stack env_var)::rest, env_var, output)
+      | "mul" -> ((arithmetic ( * ) NDiv stack env_var)::rest, env_var, output)
+      | "div" -> ((arithmetic ( / ) Div stack env_var)::rest, env_var, output)
+      | "rem" -> ((arithmetic ( mod ) Div stack env_var)::rest, env_var, output)
+      | "neg" -> ((neg stack env_var)::rest, env_var, output)
+      | "swap" -> ((swap stack)::rest, env_var, output)
+      | "toString" -> ((toString stack env_var)::rest, env_var, output)
+      | "println" -> println (stacks, env_var, output)
+      | "lessThan" -> ((arithmetic (logical ( < )) Log stack env_var)::rest, env_var, output)
+      | "equal" -> ((arithmetic (logical ( = )) Log stack env_var)::rest, env_var, output)
+      | "and" -> ((bool_op ( && ) stack env_var)::rest, env_var, output)
+      | "or" -> ((bool_op ( || ) stack env_var)::rest, env_var, output)
+      | "not" -> ((not stack env_var)::rest, env_var, output)
+      | "cat" -> ((str_op ( ^ ) stack env_var)::rest, env_var, output)
+      | "if" -> ((if_op stack env_var)::rest, env_var, output)
+      | "bind" -> bind stack (rest, env_var, output)
+      | "let" -> let_op (stacks, env_var, output)
+      | "end" -> end_op (stacks, env_var, output)
+      | _ -> (stacks, env_var, output)
+    end
+    | _ -> raise StackException
+  end
+    (* | "fun" -> fun_op t stack
+    | "return" -> return stack
+    | "funEnd" -> funEnd stack
+    | "call" -> call stack *)
 
-let rec interpreter_begin (ls_str : string list) (output : string list) (stack : types list) (env_var : (string * types) list) : (string list) =
+
+(* Begins execution of the commands *)
+let rec interpreter_begin (ls_str : string list) ((stacks, env_var, output) : info) : (out) =
   match ls_str with
   | [] -> output
   | h :: t ->
-    match (com_det h output stack env_var) with
-    |(nout, nstack, nenv_var) -> interpreter_begin t nout nstack nenv_var
+    match (com_det h (stacks, env_var, output)) with
+    |(nstack, nenv_var, nout) -> interpreter_begin t (nstack, nenv_var, nout)
 
+
+(* Handles file handling *)
 let interpreter (in_file : string) (out_file : string) : unit =
   let input_lines ic =
     let rec loop acc =
@@ -258,6 +362,10 @@ let interpreter (in_file : string) (out_file : string) : unit =
     loop []
   in
   let ls_str = In_channel.with_open_text in_file input_lines in
-  let results = interpreter_begin ls_str [] [] [] in
+  let results = interpreter_begin ls_str ([[]], [[]], []) in
   let output_bools ls oc = List.iter (Printf.fprintf oc "%s\n") ls in
   Out_channel.with_open_text out_file (output_bools (List.rev results))
+
+(* let _ = interpreter "part2/input7.txt" "output.txt" *)
+(* interpreter "part2/fail1.txt" "output.txt";;
+interpreter "input.txt" "output.txt";; *)
