@@ -25,11 +25,15 @@ type ar_flag =
   |NDiv
   |Log
 
-(* HELPER for checking if name is valid (ignores first character) *)
-let valid_name (c : char) : bool =
+(* HELPER for checking if there is atleast one character in a name *)
+let one_char (c : char) : bool =
+  ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+
+(* HELPER for checking if character is valid for a name (ignore specifics for the first character) *)
+let valid_char (c : char) : bool =
   ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || (c = '_'))
 
-(* HELPER for checking if first character of name is valid *)
+(* HELPER for checking if first character is valid for a name *)
 let fst_valid (c : char) : bool =
   ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c = '_'))
 
@@ -95,7 +99,7 @@ let arg_det (arg : string) : (types) =
           Error ":error:"
       |None ->
         begin if (not(arg = "_")) then
-         begin if ((fst_valid (String.get arg 0)) && (String.for_all valid_name arg)) then
+         begin if ((String.exists one_char arg) && (fst_valid (String.get arg 0)) && (String.for_all valid_char arg)) then
           Name arg
          else
           Error ":error:"
