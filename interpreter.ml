@@ -506,6 +506,5 @@ let interpreter (in_file : string) (out_file : string) : unit =
 
   (* #use "interpreter.ml";; *)
   (* interpreter "part3/input6.txt" "output.txt";; *)
-  (* ocamlc -o run interpreter.ml main.ml *)
 
   (* rewrite call to work with functions that are already resolved because functions can be returned. *)
