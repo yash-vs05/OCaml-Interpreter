@@ -1,5 +1,6 @@
 exception No_Environment
 exception StackException
+exception FunException
 
 type types =
   |StringC of string
@@ -8,16 +9,14 @@ type types =
   |Int of int
   |Name of string
   |Unit of string
+  |Fun of (string * ((string * types) list) * string list)
 
 type out = string list
 type stack = types list
 type stacks = stack list
-type binding = (string * types)
 type env = ((string * types) list) list
-type info = (stacks * env * out)
-(* type closure = (env * string list) *)
-(* type func = (string * closure) *)
-(* type frames = info list *)
+type info = (stacks * env * out * string list)
+type closure = (string * (string * types) list * string list)
 
 (* FLAG for arithmetic options: Div: Division, NDiv: No Division, Log: Integer Logical (lessThan, equal) *)
 type ar_flag =
@@ -164,7 +163,7 @@ let neg (stack : stack) (env_var : env) : (stack) =
     |_ -> _error_ stack
 
 (* Inverts the top of the stack (only bool operands) *)
-let not (stack : stack) (env_var : env) : (stack) =
+let not_op (stack : stack) (env_var : env) : (stack) =
   match stack with
   | [] -> _error_ stack
   | h::t ->
@@ -222,18 +221,19 @@ let toString (stack : stack) (env_var : env) : (stack) =
     match h with
     |Int x -> push (StringC (string_of_int x)) t
     |Bool x |StringC x|Name x |Unit x |Error x -> push (StringC x) t
+    |_ -> _error_ stack
 
 
 (* Adds the top string to output to be printed *)
-let println ((stacks, env_var, output) : info) : (info) =
+let println ((stacks, env_var, output, program) : info) : (info) =
   match stacks with
   | stack :: rest ->
     begin match stack with
-    | [] -> (_error_ stack :: rest), env_var, output
+    | [] -> (_error_ stack :: rest), env_var, output, program
     | h::t ->
       begin match h with
-      |StringC x -> (t :: rest), env_var, x::output
-      |_ -> (_error_ stack :: rest), env_var, output
+      |StringC x -> (t :: rest), env_var, x::output, program
+      |_ -> (_error_ stack :: rest), env_var, output, program
     end
   end
   |_ -> raise StackException
@@ -243,8 +243,6 @@ let if_op (stack : stack) (env_var : env) : (stack) =
   match stack with
   | [] -> _error_ stack
   | e1::e2::e3::t ->
-    let e1 = resolve e1 env_var in
-    let e2 = resolve e2 env_var in
     let e3 = resolve e3 env_var in
     begin match e3 with
     |Bool x ->
@@ -258,9 +256,9 @@ let if_op (stack : stack) (env_var : env) : (stack) =
   |_ -> _error_ stack
 
 (* Binds the value (Int, Bool, String, Unit or Value of Bound Name) present on top to a name present on second top *)
-let bind (stack : stack) ((stacks, env_var, output) : info) : (info) =
+let bind (stack : stack) ((stacks, env_var, output, program) : info) : (info) =
   match stack with
-  | [] -> _error_ stack :: stacks, env_var, output
+  | [] -> _error_ stack :: stacks, env_var, output, program
   | e1::e2::t1 ->
     let e1 = resolve e1 env_var in
     begin match e2 with
@@ -268,26 +266,26 @@ let bind (stack : stack) ((stacks, env_var, output) : info) : (info) =
       begin match e1 with
       |StringC _ |Int _ |Unit _ |Bool _ ->
         begin match env_var with
-        | h2 :: t2 -> (push (Unit ":unit:") t1) :: stacks, ((n, e1) :: h2) :: t2, output
+        | h2 :: t2 -> (push (Unit ":unit:") t1) :: stacks, ((n, e1) :: h2) :: t2, output, program
         | _ -> raise No_Environment
       end
-      |_ ->  _error_ stack :: stacks, env_var, output
+      |_ ->  _error_ stack :: stacks, env_var, output, program
     end
-    |_ ->  _error_ stack :: stacks, env_var, output
+    |_ ->  _error_ stack :: stacks, env_var, output, program
   end
-  | _ ->  _error_ stack :: stacks, env_var, output
+  | _ ->  _error_ stack :: stacks, env_var, output, program
 
 (* Starts a new scope, that is, create a new environment with previous bindings present and a new stack *)
-let let_op ((stacks, env_var, output) : info) : (info) =
+let let_op ((stacks, env_var, output, program) : info) : (info) =
   match env_var with
   | h :: t ->
     let nenv_var = h :: h :: t in
-    ([]::stacks, nenv_var, output)
+    ([]::stacks, nenv_var, output, program)
   | _ -> raise No_Environment
 
 
 (* Ends a scope, that is, deletes the latest environment and returns from the latest stack to the previous *)
-let end_op ((stacks, env_var, output) : info) : (info) =
+let end_op ((stacks, env_var, output, program) : info) : (info) =
   match env_var with
   | h :: t ->
     let nenv_var = t in
@@ -297,61 +295,197 @@ let end_op ((stacks, env_var, output) : info) : (info) =
       | top :: els ->
         let nstack = (top :: old) in
         let nstacks = nstack :: rest in
-        (nstacks, nenv_var, output)
+        (nstacks, nenv_var, output, program)
       | _ -> raise StackException
       end
     | _ -> raise StackException
     end
   | _ -> raise No_Environment
 
+(* Returns the last item on function stack frame to the caller stack frame *)
+let return ((stacks, env_var, output, program) : info) : (info) =
+  match env_var with
+  | h :: t ->
+    let nenv_var = t in
+    begin match stacks with
+    | stack :: old :: rest ->
+      begin match stack with
+      | top :: els ->
+        let nstack = ((resolve top env_var) :: old) in
+        let nstacks = nstack :: rest in
+        (nstacks, nenv_var, output, program)
+      | _ -> raise StackException
+      end
+    | _ -> raise StackException
+    end
+  | _ -> raise No_Environment
+
+(* Helper function to check for successful function call *)
+let func_checks ((stacks, env_var, output, program) : info) : (bool * (string * types)) =
+  match stacks with
+  | stack :: rest ->
+    begin match stack with
+    | arg :: fname :: els ->
+      begin match fname with
+      | Name fvar ->
+        let fname_clear = List.mem_assoc fvar (List.hd env_var) in
+        begin match arg with
+        | Name pvar -> ((List.mem_assoc pvar (List.hd env_var) && fname_clear),(fvar,arg))
+        | Int x -> ((true && fname_clear),(fvar,arg))
+        | StringC x | Bool x | Unit x -> ((true && fname_clear),(fvar,arg))
+        | _ -> (false, ("garbage",Error ":error:"))
+      end
+      | _ -> (false, ("garbage",Error ":error:"))
+    end
+    | _ -> raise StackException
+    end
+  | _ -> raise StackException
+
+(*
+Handles function calling:
+Stack Updation: failed call -> error, successful call -> empty stack
+Environment Updation: failed call -> no change, successful call -> function env with parameter-argument binding
+Program Updation: failed call -> no change, successful call -> function body joined
+ *)
+let call ((stacks, env_var, output, program) : info) : (info) =
+  let (clear, func_items) = func_checks (stacks, env_var, output, program) in
+  begin match clear with
+  | false ->
+    begin match stacks with
+    | stack :: rest ->
+      let nstacks = ((_error_ stack) :: rest) in
+      (nstacks, env_var, output, program)
+    | _ -> raise StackException
+    end
+  | true ->
+    let (fname, arg_val) = func_items in
+    begin match List.assoc fname (List.hd env_var) with
+    | Fun closure ->
+      let (pname, fun_env, body) = closure in
+      let fun_arg = resolve arg_val env_var in
+      let nfun_env = (pname, fun_arg) :: fun_env in
+      begin match env_var with
+      | h :: t ->
+        let nenv_var = nfun_env :: h :: t in
+        begin match stacks with
+        | stack :: rest ->
+          begin match stack with
+          | rem1 :: rem2 :: els ->
+            let nstacks = ([] :: (els :: rest)) in
+            let nprogram = body @ program in
+            (nstacks, nenv_var, output, nprogram)
+          | _ -> raise StackException
+          end
+        | _ -> raise StackException
+        end
+      | _ -> raise No_Environment
+      end
+    | _ -> raise FunException
+    end
+  end
+
+(* Obtains the body of a function for the closure *)
+let rec obtain_body (program : string list) (body : string list) (ctr : int) : (string list * string list) =
+  match program with
+  | line :: t ->
+    let com_lst = split line in
+    begin match com_lst with
+    |(a,b) ->
+      begin match String.trim a with
+      | "fun" ->
+        obtain_body t (line :: body) (ctr+1)
+      | "funEnd" ->
+        begin match ctr with
+        | 0 -> (List.rev body, t)
+        | _ ->
+          obtain_body t (line :: body) (ctr-1)
+        end
+      | _ -> obtain_body t (line :: body) ctr
+    end
+  end
+  |_ -> raise FunException
+
+(* Handles function definations: creates a closure and binds it to the function name in the current environment *)
+(*
+A closure is mutually recursive with the current environment, that is, the closure stores
+the current environment and the closure includes the current environment. To implement such
+a structure the keyword "and" was used. Documentation: https://ocaml.org/docs/loops-recursion
+*)
+let fun_def ((stacks, env_var, output, prog) : info) (post_fun : string): (info) =
+  let (fname,pname) = split post_fun in
+  let fname = String.trim fname in
+  let pname = String.trim pname in
+  let body = obtain_body prog [] 0 in
+  let fn_check = ((String.exists one_char fname) && (fst_valid (String.get fname 0)) && (String.for_all valid_char fname)) in
+  let pn_check = ((String.exists one_char pname) && (fst_valid (String.get pname 0)) && (String.for_all valid_char pname)) in
+  let same_check = (String.equal fname pname) in
+  if(fn_check && pn_check && not(same_check)) then
+    match env_var with
+    | curr :: t ->
+      let rec closure = Fun (pname, nenv, (fst body)) and nenv = (fname, closure) :: curr in
+      let nenv_var = nenv :: t in
+      begin match stacks with
+      | stack :: rest ->
+        let nstack = push (Unit ":unit:") stack in
+        let nstacks = nstack :: rest in
+        (nstacks, nenv_var, output, snd body)
+      | _ -> raise StackException
+      end
+    | _ -> raise No_Environment
+  else
+    begin match stacks with
+    | stack :: rest ->
+      let nstack = push (Error ":error:") stack in
+      let nstacks = nstack :: rest in
+      (nstacks, env_var, output, snd body)
+    | _ -> raise StackException
+    end
+
 (* Detects and executes the command passed in *)
-let com_det (line : string) ((stacks, env_var, output) : info) : (info) =
+let com_det (line : string) ((stacks, env_var, output, program) : info) : (info) =
   let com_lst = split line in
   match com_lst with
   | (a,b) ->
     begin match stacks with
     | stack :: rest ->
       begin match String.trim a with
-      | "quit" -> ((pop stack)::rest, env_var, output)
-      | "push" -> ((push (arg_det(String.trim b)) stack)::rest, env_var, output)
-      | "pop" -> ((pop stack)::rest, env_var, output)
-      | "add" -> ((arithmetic ( + ) NDiv stack env_var)::rest, env_var, output)
-      | "sub" -> ((arithmetic ( - ) NDiv stack env_var)::rest, env_var, output)
-      | "mul" -> ((arithmetic ( * ) NDiv stack env_var)::rest, env_var, output)
-      | "div" -> ((arithmetic ( / ) Div stack env_var)::rest, env_var, output)
-      | "rem" -> ((arithmetic ( mod ) Div stack env_var)::rest, env_var, output)
-      | "neg" -> ((neg stack env_var)::rest, env_var, output)
-      | "swap" -> ((swap stack)::rest, env_var, output)
-      | "toString" -> ((toString stack env_var)::rest, env_var, output)
-      | "println" -> println (stacks, env_var, output)
-      | "lessThan" -> ((arithmetic (logical ( < )) Log stack env_var)::rest, env_var, output)
-      | "equal" -> ((arithmetic (logical ( = )) Log stack env_var)::rest, env_var, output)
-      | "and" -> ((bool_op ( && ) stack env_var)::rest, env_var, output)
-      | "or" -> ((bool_op ( || ) stack env_var)::rest, env_var, output)
-      | "not" -> ((not stack env_var)::rest, env_var, output)
-      | "cat" -> ((str_op ( ^ ) stack env_var)::rest, env_var, output)
-      | "if" -> ((if_op stack env_var)::rest, env_var, output)
-      | "bind" -> bind stack (rest, env_var, output)
-      | "let" -> let_op (stacks, env_var, output)
-      | "end" -> end_op (stacks, env_var, output)
-      | _ -> (stacks, env_var, output)
+      | "quit" -> ((pop stack)::rest, env_var, output, program)
+      | "push" -> ((push (arg_det(String.trim b)) stack)::rest, env_var, output, program)
+      | "pop" -> ((pop stack)::rest, env_var, output, program)
+      | "add" -> ((arithmetic ( + ) NDiv stack env_var)::rest, env_var, output, program)
+      | "sub" -> ((arithmetic ( - ) NDiv stack env_var)::rest, env_var, output, program)
+      | "mul" -> ((arithmetic ( * ) NDiv stack env_var)::rest, env_var, output, program)
+      | "div" -> ((arithmetic ( / ) Div stack env_var)::rest, env_var, output, program)
+      | "rem" -> ((arithmetic ( mod ) Div stack env_var)::rest, env_var, output, program)
+      | "neg" -> ((neg stack env_var)::rest, env_var, output, program)
+      | "swap" -> ((swap stack)::rest, env_var, output, program)
+      | "toString" -> ((toString stack env_var)::rest, env_var, output, program)
+      | "println" -> println (stacks, env_var, output, program)
+      | "lessThan" -> ((arithmetic (logical ( < )) Log stack env_var)::rest, env_var, output, program)
+      | "equal" -> ((arithmetic (logical ( = )) Log stack env_var)::rest, env_var, output, program)
+      | "and" -> ((bool_op ( && ) stack env_var)::rest, env_var, output, program)
+      | "or" -> ((bool_op ( || ) stack env_var)::rest, env_var, output, program)
+      | "not" -> ((not_op stack env_var)::rest, env_var, output, program)
+      | "cat" -> ((str_op ( ^ ) stack env_var)::rest, env_var, output, program)
+      | "if" -> ((if_op stack env_var)::rest, env_var, output, program)
+      | "bind" -> bind stack (rest, env_var, output, program)
+      | "let" -> let_op (stacks, env_var, output, program)
+      | "end" -> end_op (stacks, env_var, output, program)
+      | "fun" -> fun_def (stacks, env_var, output, program) b
+      | "call" -> call (stacks, env_var, output, program)
+      | "return" -> return (stacks, env_var, output, program)
+      | _ -> (stacks, env_var, output, program)
     end
     | _ -> raise StackException
   end
-    (* | "fun" -> fun_op t stack
-    | "return" -> return stack
-    | "funEnd" -> funEnd stack
-    | "call" -> call stack *)
-
 
 (* Begins execution of the commands *)
-let rec interpreter_begin (ls_str : string list) ((stacks, env_var, output) : info) : (out) =
-  match ls_str with
+let rec interpreter_begin ((stacks, env_var, output, program) : info) : (out) =
+  match program with
   | [] -> output
   | h :: t ->
-    match (com_det h (stacks, env_var, output)) with
-    |(nstack, nenv_var, nout) -> interpreter_begin t (nstack, nenv_var, nout)
-
+    match (com_det h (stacks, env_var, output, t)) with
+    |(nstack, nenv_var, nout, nprogram) -> interpreter_begin (nstack, nenv_var, nout, nprogram)
 
 (* Handles file handling *)
 let interpreter (in_file : string) (out_file : string) : unit =
@@ -366,10 +500,12 @@ let interpreter (in_file : string) (out_file : string) : unit =
     loop []
   in
   let ls_str = In_channel.with_open_text in_file input_lines in
-  let results = interpreter_begin ls_str ([[]], [[]], []) in
+  let results = interpreter_begin ([[]], [[]], [], ls_str) in
   let output_bools ls oc = List.iter (Printf.fprintf oc "%s\n") ls in
   Out_channel.with_open_text out_file (output_bools (List.rev results))
 
-(* let _ = interpreter "part2/input7.txt" "output.txt" *)
-(* interpreter "part2/fail1.txt" "output.txt";;
-interpreter "input.txt" "output.txt";; *)
+  (* #use "interpreter.ml";; *)
+  (* interpreter "part3/input6.txt" "output.txt";; *)
+  (* ocamlc -o run interpreter.ml main.ml *)
+
+  (* rewrite call to work with functions that are already resolved because functions can be returned. *)
