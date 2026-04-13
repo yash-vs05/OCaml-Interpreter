@@ -221,7 +221,7 @@ let toString (stack : stack) (env_var : env) : (stack) =
     match h with
     |Int x -> push (StringC (string_of_int x)) t
     |Bool x |StringC x|Name x |Unit x |Error x -> push (StringC x) t
-    |_ -> _error_ stack
+    |Fun _ -> push (StringC ":fun:") t
 
 
 (* Adds the top string to output to be printed *)
@@ -264,7 +264,7 @@ let bind (stack : stack) ((stacks, env_var, output, program) : info) : (info) =
     begin match e2 with
     |Name n ->
       begin match e1 with
-      |StringC _ |Int _ |Unit _ |Bool _ ->
+      |StringC _ |Int _ |Unit _ |Bool _ |Fun _ ->
         begin match env_var with
         | h2 :: t2 -> (push (Unit ":unit:") t1) :: stacks, ((n, e1) :: h2) :: t2, output, program
         | _ -> raise No_Environment
@@ -311,33 +311,43 @@ let return ((stacks, env_var, output, program) : info) : (info) =
     | stack :: old :: rest ->
       begin match stack with
       | top :: els ->
-        let nstack = ((resolve top env_var) :: old) in
-        let nstacks = nstack :: rest in
-        (nstacks, nenv_var, output, program)
+        begin match (resolve top env_var) with
+        | Name _ ->
+          let nstack = _error_ old in
+          let nstacks = nstack :: rest in
+          (nstacks, nenv_var, output, program)
+        | _ ->
+          let nstack = ((resolve top env_var) :: old) in
+          let nstacks = nstack :: rest in
+          (nstacks, nenv_var, output, program)
+        end
       | _ -> raise StackException
       end
     | _ -> raise StackException
     end
   | _ -> raise No_Environment
 
+(* Helper function to check for correct function passing (closure or a name that resolves into a closure) *)
+let f_checker (fname : types) (env_var : env) : bool =
+  match fname with
+  | Fun _ -> true
+  | Name fvar -> List.mem_assoc fvar (List.hd env_var)
+  | _ -> false
+
 (* Helper function to check for successful function call *)
-let func_checks ((stacks, env_var, output, program) : info) : (bool * (string * types)) =
+let func_checks ((stacks, env_var, output, program) : info) : (bool * (types * types)) =
   match stacks with
   | stack :: rest ->
     begin match stack with
     | arg :: fname :: els ->
-      begin match fname with
-      | Name fvar ->
-        let fname_clear = List.mem_assoc fvar (List.hd env_var) in
-        begin match arg with
-        | Name pvar -> ((List.mem_assoc pvar (List.hd env_var) && fname_clear),(fvar,arg))
-        | Int x -> ((true && fname_clear),(fvar,arg))
-        | StringC x | Bool x | Unit x -> ((true && fname_clear),(fvar,arg))
-        | _ -> (false, ("garbage",Error ":error:"))
+      let fname_clear = f_checker fname env_var in
+      begin match arg with
+        | Name pvar -> ((List.mem_assoc pvar (List.hd env_var) && fname_clear),(fname,arg))
+        | Int x -> ((true && fname_clear),(fname,arg))
+        | StringC x | Bool x | Unit x -> ((true && fname_clear),(fname,arg))
+        | _ -> (false, (Error ":error:",Error ":error:"))
       end
-      | _ -> (false, ("garbage",Error ":error:"))
-    end
-    | _ -> raise StackException
+      | _ -> (false, (Error ":error:",Error ":error:"))
     end
   | _ -> raise StackException
 
@@ -358,8 +368,8 @@ let call ((stacks, env_var, output, program) : info) : (info) =
     | _ -> raise StackException
     end
   | true ->
-    let (fname, arg_val) = func_items in
-    begin match List.assoc fname (List.hd env_var) with
+    let (ftype, arg_val) = func_items in
+    begin match resolve ftype env_var with
     | Fun closure ->
       let (pname, fun_env, body) = closure in
       let fun_arg = resolve arg_val env_var in
@@ -503,8 +513,3 @@ let interpreter (in_file : string) (out_file : string) : unit =
   let results = interpreter_begin ([[]], [[]], [], ls_str) in
   let output_bools ls oc = List.iter (Printf.fprintf oc "%s\n") ls in
   Out_channel.with_open_text out_file (output_bools (List.rev results))
-
-  (* #use "interpreter.ml";; *)
-  (* interpreter "part3/input6.txt" "output.txt";; *)
-
-  (* rewrite call to work with functions that are already resolved because functions can be returned. *)
